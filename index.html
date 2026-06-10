@@ -4,95 +4,192 @@
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
-*{margin:0;box-sizing:border-box}body{background:#000;color:#0f0;font-family:monospace;overflow:hidden;position:fixed;inset:0;touch-action:none;-webkit-user-select:none;user-select:none}
-button{background:#0f0;color:#000;border:0;padding:14px 22px;font:bold 18px monospace;border-radius:8px;margin:8px}
-#menu,#link{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:16px;background:#000;z-index:2}
-#qr{background:#fff;padding:8px;max-width:80vw}
-#msg{margin:12px;font-size:16px;max-width:320px}[hidden]{display:none!important}
+*{margin:0;box-sizing:border-box}
+body{background:#050510;color:#dff;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;position:fixed;inset:0;touch-action:none;-webkit-user-select:none;user-select:none}
+h1{letter-spacing:6px;text-shadow:0 0 20px #0ff,0 0 40px #08f;font-weight:200;margin-bottom:10px}
+button{background:linear-gradient(135deg,#0ff,#08f);color:#012;border:0;padding:14px 26px;font:700 16px 'Segoe UI',sans-serif;border-radius:14px;margin:7px;box-shadow:0 0 14px #0ff4;letter-spacing:1px}
+button:active{transform:scale(.96)}
+#menu,#link{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:16px;background:radial-gradient(circle at 50% 25%,#101035,#050510 70%);z-index:2}
+#qr{background:#fff;padding:8px;border-radius:10px;max-width:80vw}
+#msg{margin:12px;font-size:16px;max-width:320px;color:#9cf}
+#set{margin-top:8px}
+.row{display:flex;gap:5px;align-items:center;margin:5px;justify-content:center}
+.row b{width:92px;text-align:right;font-size:11px;color:#79b;font-weight:600;letter-spacing:1px}
+.row button{padding:8px 11px;font-size:12px;margin:0;background:#13234a;color:#9bd;box-shadow:none;border-radius:9px}
+.row button.on{background:linear-gradient(135deg,#0ff,#08f);color:#012}
+.ghost{background:#13234a!important;color:#9bd!important;box-shadow:none!important}
+[hidden]{display:none!important}
 </style></head><body>
 <div id="menu"><h1>CAM PONG</h1>
 <button onclick="startLocal()">1 PHONE (2 players)</button>
 <button onclick="startHost()">2 PHONES — HOST</button>
-<button onclick="askJoin()">JOIN WITH CODE</button>
-<p style="color:#888;max-width:300px">Player 2: just scan the host's QR with your phone camera — the game opens and joins by itself</p></div>
-<div id="link" hidden><div id="msg"></div><canvas id="qr" hidden></canvas><button onclick="location.reload()">CANCEL</button></div>
+<button onclick="askJoin()" class="ghost">JOIN WITH CODE</button>
+<button onclick="$('set').hidden=!$('set').hidden" class="ghost">⚙ SETTINGS</button>
+<div id="set" hidden></div>
+<p style="color:#567;max-width:300px;margin-top:10px;font-size:13px">Player 2: scan the host's QR with your phone camera — it joins by itself. Host's settings apply online.</p></div>
+<div id="link" hidden><div id="msg"></div><canvas id="qr" hidden></canvas><button onclick="location.reload()" class="ghost">CANCEL</button></div>
 <canvas id="game"></canvas>
 <script>
 const $=i=>document.getElementById(i),cv=$('game'),cx=cv.getContext('2d');
-let W,H;const fit=()=>{W=cv.width=innerWidth;H=cv.height=innerHeight};addEventListener('resize',fit);fit();
-const PW=.24,PH=.015,BR=.014;
-let mode=0,role=0,ch=null,run=0,over=0;          // mode 1=local 2=net; role 0=host 1=guest
-let b={x:.5,y:.5,vx:0,vy:0},padB=.5,padT=.5,sc=[0,0]; // sc[0]=bottom(me/host)
-function serve(){b={x:.5,y:.5,vx:(Math.random()-.5)*.008,vy:(Math.random()<.5?1:-1)*.007};run=1}
-function reset(){sc=[0,0];over=0;run=0;b={x:.5,y:.5,vx:0,vy:0}}
+let W,H;const fit=()=>{const d=devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*d;cv.height=H*d;cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(d,0,0,d,0,0)};
+addEventListener('resize',fit);fit();
+// ---- settings (persisted) ----
+const OPT={spd:['SLOW','NORMAL','FAST'],pad:['SMALL','MEDIUM','LARGE'],win:[5,7,11],pow:['OFF','ON'],snd:['OFF','ON']};
+const LBL={spd:'BALL SPEED',pad:'PADDLE',win:'WIN SCORE',pow:'POWER-UPS',snd:'SOUND'};
+let S={spd:1,pad:1,win:7,pow:1,snd:1};try{Object.assign(S,JSON.parse(localStorage.cp||'{}'))}catch(e){}
+$('set').innerHTML=Object.keys(OPT).map(k=>'<div class="row"><b>'+LBL[k]+'</b>'+OPT[k].map((o,i)=>{const v=k=='win'?o:i;return '<button data-k="'+k+'" data-v="'+v+'" onclick="setS(\''+k+'\','+v+')">'+o+'</button>'}).join('')+'</div>').join('');
+function setS(k,v){S[k]=v;localStorage.cp=JSON.stringify(S);mark()}
+function mark(){document.querySelectorAll('#set button').forEach(b=>b.classList.toggle('on',S[b.dataset.k]==b.dataset.v))}
+mark();
+const spdMul=()=>[.7,1,1.35][S.spd],PWb=()=>.24*[.75,1,1.3][S.pad];
+// ---- sound ----
+let AC;function snd(k){if(!S.snd)return;try{AC=AC||new(window.AudioContext||window.webkitAudioContext)();
+const f={h:660,w:300,sc:150,pu:980}[k]||500,d=k=='sc'?.3:.07,o=AC.createOscillator(),g=AC.createGain();
+o.type=k=='sc'?'sawtooth':'square';o.frequency.value=f;g.gain.setValueAtTime(.12,AC.currentTime);
+g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+d);o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+d)}catch(e){}}
+// ---- game state ----
+const PH=.015,BR=.014;
+let mode=0,role=0,ch=null,run=0,over=0;            // mode 1=local 2=net; role 0=host 1=guest
+let b={x:.5,y:.5,vx:0,vy:0},tb={x:.5,y:.5};        // tb = guest interpolation target
+let padB=.5,padT=.5,gT=.5,prevB=.5,prevT=.5,vB=0,vT=0,wB=.24,wT=.24;
+let sc=[0,0],lastHit=0,evN=0,evK='',lastEv=0,flash=0;
+let pu=null,puNext=0,fx=[],T=[],P=[];
+const PUC=['#0f8','#f55','#ff3','#4af'],PUS=['+','−','⚡','❄'];
+function ev(k){evN++;evK=k;snd(k)}
+function burst(x,y,col,n){for(let i=0;i<n;i++){const a=Math.random()*7,s=.002+Math.random()*.006;P.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,l:1,c:col})}}
+function serve(){const sp=.0075*spdMul();b={x:.5,y:.5,vx:(Math.random()-.5)*sp,vy:(Math.random()<.5?1:-1)*sp};run=1}
+function reset(){sc=[0,0];over=0;run=0;b={x:.5,y:.5,vx:0,vy:0};tb={x:.5,y:.5};fx=[];pu=null;puNext=performance.now()+6000;T=[];P=[]}
 function tap(){
   if(over){if(mode==1||role==0)reset();return}
   if(!run){if(mode==1||role==0)serve();else if(ch&&ch.open)ch.send({t:'t'})}
 }
-addEventListener('touchstart',e=>{if(!mode||e.target.closest('button'))return;e.preventDefault();tap();move(e)},{passive:false});
-addEventListener('touchmove',e=>{if(!mode)return;e.preventDefault();move(e)},{passive:false});
-function move(e){if(!mode)return;
-  for(const t of e.touches){const x=t.clientX/innerWidth,y=t.clientY/innerHeight;
+addEventListener('touchstart',e=>{if(!mode||e.target.closest('button'))return;e.preventDefault();tap();move(e.touches)},{passive:false});
+addEventListener('touchmove',e=>{if(!mode)return;e.preventDefault();move(e.touches)},{passive:false});
+addEventListener('mousedown',e=>{if(!mode||e.target.closest('button'))return;tap();move([e])});
+addEventListener('mousemove',e=>{if(mode&&e.buttons)move([e])});
+function move(ts){
+  for(const t of ts){const x=t.clientX/innerWidth,y=t.clientY/innerHeight;
     if(mode==1&&y<.5)padT=x;else padB=x;}
   if(mode==2&&role==1&&ch&&ch.open)ch.send({t:'p',x:+(1-padB).toFixed(4)});
 }
-function physics(){ // host/local only
+function widths(n){let B=PWb(),T2=PWb();fx=fx.filter(f=>f.end>n);
+  for(const f of fx){if(f.k==0)f.who?T2*=1.6:B*=1.6;if(f.k==1)f.who?B*=.55:T2*=.55}
+  wB=Math.min(B,.5);wT=Math.min(T2,.5)}
+function apply(k,who,n){
+  if(k<2)fx.push({k,who,end:n+7000});
+  else{const m=k==2?1.45:.6,sp=Math.hypot(b.vx,b.vy),ns=Math.min(Math.max(sp*m,.005),.03);
+    b.vx*=ns/sp;b.vy*=ns/sp}}
+function physics(n){
   b.x+=b.vx;b.y+=b.vy;
-  if(b.x<BR){b.x=BR;b.vx*=-1}if(b.x>1-BR){b.x=1-BR;b.vx*=-1}
-  const hit=(px,py,up)=>{if(Math.abs(b.x-px)<PW/2+BR){b.y=py+(up?-1:1)*(PH+BR);b.vy=(up?-1:1)*Math.min(Math.abs(b.vy)*1.06,.02);b.vx+=(b.x-px)*.03}};
-  if(b.vy>0&&b.y>.95-BR&&b.y<.97)hit(padB,.95,1);
-  if(b.vy<0&&b.y<.05+BR&&b.y>.03)hit(padT,.05,0);
-  if(b.y>1.05){sc[1]++;point()}if(b.y<-.05){sc[0]++;point()}
+  if(b.x<BR){b.x=BR;b.vx=Math.abs(b.vx);ev('w')}
+  if(b.x>1-BR){b.x=1-BR;b.vx=-Math.abs(b.vx);ev('w')}
+  // racket physics: contact point steers, paddle swing speed adds pace + bends the angle
+  const hit=(px,up,pv,w)=>{
+    if(Math.abs(b.x-px)>w/2+BR)return;
+    b.y=(up?.95:.05)+(up?-1:1)*(PH+BR);
+    let sp=Math.hypot(b.vx,b.vy)*(1.03+Math.min(Math.abs(pv)*10,.6));
+    sp=Math.min(Math.max(sp,.006),.03);
+    let ang=(b.x-px)/(w/2)+pv*7;ang=Math.max(-1.25,Math.min(1.25,ang));
+    b.vx=Math.sin(ang)*sp;b.vy=(up?-1:1)*Math.abs(Math.cos(ang))*sp;
+    lastHit=up?0:1;ev('h');burst(b.x,b.y,up?'#0ff':'#f4a',6)};
+  if(b.vy>0&&b.y>.95-PH-BR&&b.y<.97)hit(padB,1,vB,wB);
+  if(b.vy<0&&b.y<.05+PH+BR&&b.y>.03)hit(padT,0,vT,wT);
+  if(S.pow&&!pu&&n>puNext){pu={x:.15+Math.random()*.7,y:.35+Math.random()*.3,k:Math.random()*4|0}}
+  if(pu&&Math.abs(b.x-pu.x)<.055&&Math.abs(b.y-pu.y)<.055){
+    apply(pu.k,lastHit,n);ev('pu');burst(pu.x,pu.y,PUC[pu.k],18);pu=null;puNext=n+7000+Math.random()*6000}
+  if(b.y>1.05){sc[1]++;point()}else if(b.y<-.05){sc[0]++;point()}
 }
-function point(){run=0;b={x:.5,y:.5,vx:0,vy:0};if(sc[0]>6||sc[1]>6)over=1}
-function draw(){cx.fillStyle='#000';cx.fillRect(0,0,W,H);cx.fillStyle='#0f0';
-  cx.setLineDash([8,8]);cx.strokeStyle='#0f0';cx.beginPath();cx.moveTo(0,H/2);cx.lineTo(W,H/2);cx.stroke();
-  const r=BR*W;cx.beginPath();cx.arc(b.x*W,b.y*H,r,0,7);cx.fill();
-  cx.fillRect((padB-PW/2)*W,.95*H,PW*W,PH*H);cx.fillRect((padT-PW/2)*W,(.05-PH)*H,PW*W,PH*H);
-  cx.font='bold 28px monospace';cx.textAlign='center';
-  cx.fillText(sc[1],W/2,H/2-20);cx.fillText(sc[0],W/2,H/2+40);
-  if(over){cx.fillText((sc[0]>sc[1]?(mode==1?'BOTTOM WINS':'YOU WIN!'):(mode==1?'TOP WINS':'YOU LOSE')),W/2,H/2-70);cx.fillText('tap to restart',W/2,H/2+90)}
-  else if(!run)cx.fillText(mode==2&&role==1?'tap when ready':'tap to serve',W/2,H/2+90);
+function point(){run=0;b={x:.5,y:.5,vx:0,vy:0};ev('sc');flash=1;burst(.5,.5,'#fff',16);if(sc[0]>=S.win||sc[1]>=S.win)over=1}
+const rr=(x,y,w,h,r)=>{cx.beginPath();cx.roundRect?cx.roundRect(x,y,w,h,r):cx.rect(x,y,w,h);cx.fill()};
+function draw(){
+  const g=cx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#0a0a22');g.addColorStop(.5,'#060614');g.addColorStop(1,'#0a0a22');
+  cx.fillStyle=g;cx.fillRect(0,0,W,H);
+  cx.strokeStyle='rgba(120,200,255,.15)';cx.setLineDash([10,12]);cx.beginPath();cx.moveTo(0,H/2);cx.lineTo(W,H/2);cx.stroke();cx.setLineDash([]);
+  cx.textAlign='center';cx.fillStyle='rgba(150,200,255,.09)';cx.font='900 110px "Segoe UI"';
+  cx.fillText(sc[1],W/2,H*.3);cx.fillText(sc[0],W/2,H*.78);
+  if(pu){const x=pu.x*W,y=pu.y*H;cx.shadowColor=PUC[pu.k];cx.shadowBlur=18;
+    cx.fillStyle=PUC[pu.k];cx.beginPath();cx.arc(x,y,16,0,7);cx.fill();cx.shadowBlur=0;
+    cx.fillStyle='#001';cx.font='bold 19px "Segoe UI"';cx.fillText(PUS[pu.k],x,y+7)}
+  for(let i=0;i<T.length;i++){const a=i/T.length;cx.fillStyle='rgba(140,240,255,'+(a*.35)+')';
+    cx.beginPath();cx.arc(T[i].x*W,T[i].y*H,BR*W*a,0,7);cx.fill()}
+  if(run||mode){cx.shadowColor='#aff';cx.shadowBlur=16;cx.fillStyle='#fff';
+    cx.beginPath();cx.arc(b.x*W,b.y*H,BR*W,0,7);cx.fill()}
+  cx.shadowColor='#f4a';cx.shadowBlur=14;cx.fillStyle='#f4a';rr((padT-wT/2)*W,(.05-PH)*H,wT*W,PH*H+4,6);
+  cx.shadowColor='#0ff';cx.shadowBlur=14;cx.fillStyle='#0ff';rr((padB-wB/2)*W,.95*H-4,wB*W,PH*H+4,6);
+  cx.shadowBlur=0;
+  for(let i=P.length-1;i>=0;i--){const p=P[i];p.x+=p.vx;p.y+=p.vy;p.l-=.03;
+    if(p.l<=0){P.splice(i,1);continue}
+    cx.globalAlpha=p.l;cx.fillStyle=p.c;cx.fillRect(p.x*W-2,p.y*H-2,4,4)}
+  cx.globalAlpha=1;
+  cx.fillStyle='#cef';cx.font='600 20px "Segoe UI"';
+  if(over)cx.fillText((sc[0]>sc[1]?(mode==1?'BOTTOM WINS':'YOU WIN! 🏆'):(mode==1?'TOP WINS':'YOU LOSE'))+'  —  tap to restart',W/2,H/2+70);
+  else if(!run&&mode)cx.fillText(mode==2&&role==1?'tap when ready':'tap to serve',W/2,H/2+70);
+  if(flash>0){cx.strokeStyle='rgba(0,255,255,'+flash*.7+')';cx.lineWidth=8;cx.strokeRect(2,2,W-4,H-4);cx.lineWidth=1;flash-=.04}
 }
 function loop(){
-  if(mode==1||role==0){if(run)physics();
-    if(ch&&ch.open)ch.send({t:'s',b:[+b.x.toFixed(4),+b.y.toFixed(4)],p:+padB.toFixed(4),s:sc,r:run,o:over});}
-  if(mode)draw();requestAnimationFrame(loop)}
+  const n=performance.now();
+  if(mode==1||role==0){
+    widths(n);
+    if(mode==2)padT+=(gT-padT)*.5;
+    vB=(padB-prevB)*.6+vB*.4;prevB=padB;
+    vT=(padT-prevT)*.6+vT*.4;prevT=padT;
+    if(run)physics(n);
+    if(ch&&ch.open)ch.send({t:'s',b:[+b.x.toFixed(4),+b.y.toFixed(4)],p:+padB.toFixed(4),s:sc,r:run,o:over,
+      w:[+wB.toFixed(3),+wT.toFixed(3)],u:pu?[+pu.x.toFixed(3),+pu.y.toFixed(3),pu.k]:0,e:[evN,evK]});
+  }else if(mode==2){b.x+=(tb.x-b.x)*.55;b.y+=(tb.y-b.y)*.55}
+  if(mode){if(run){T.push({x:b.x,y:b.y});if(T.length>14)T.shift()}else T=[];draw()}
+  requestAnimationFrame(loop)}
 loop();
 function startGame(){$('menu').hidden=$('link').hidden=true;reset()}
 function startLocal(){mode=1;startGame()}
-// ---- pairing: host shows a QR that is just a URL; guest's native camera opens it and auto-joins ----
-let peer=null;
+// ---- pairing: QR is a URL; guest's native camera opens it and auto-joins (PeerJS signaling, TURN relay fallback) ----
+const ICE={iceServers:[
+  {urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},
+  {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
+  {urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'}]};
+let peer=null,hostCode=null;
 function ui(m){$('msg').textContent=m}
 function showQR(txt){const q=$('qr'),c=qrcode(0,'L');c.addData(txt);c.make();
   const n=c.getModuleCount(),s=Math.max(2,Math.floor(Math.min(innerWidth*.8,340)/n));
-  q.hidden=false;q.width=q.height=n*s;const g=q.getContext('2d');
-  g.fillStyle='#fff';g.fillRect(0,0,q.width,q.height);g.fillStyle='#000';
-  for(let r=0;r<n;r++)for(let o=0;o<n;o++)if(c.isDark(r,o))g.fillRect(o*s,r*s,s,s);}
+  q.hidden=false;q.width=q.height=n*s;const g2=q.getContext('2d');
+  g2.fillStyle='#fff';g2.fillRect(0,0,q.width,q.height);g2.fillStyle='#000';
+  for(let r=0;r<n;r++)for(let o=0;o<n;o++)if(c.isDark(r,o))g2.fillRect(o*s,r*s,s,s)}
 function wire(c){ch=c;
-  const go=()=>{mode=2;startGame()};
+  const go=()=>{if(mode==2){$('link').hidden=true;$('menu').hidden=true}else{mode=2;startGame()}};
   ch.open?go():ch.on('open',go);
   ch.on('data',d=>{
-    if(d.t=='p')padT=d.x;
+    if(d.t=='p')gT=d.x;
     if(d.t=='t'&&!run&&!over)serve();
-    if(d.t=='s'){b={x:1-d.b[0],y:1-d.b[1],vx:0,vy:0};padT=1-d.p;sc=[d.s[1],d.s[0]];run=d.r;over=d.o}});
-  ch.on('close',()=>{mode=0;$('link').hidden=false;$('qr').hidden=true;ui('Other player left — reload to play again')});
+    if(d.t=='s'){tb={x:1-d.b[0],y:1-d.b[1]};padT=1-d.p;sc=[d.s[1],d.s[0]];run=d.r;over=d.o;
+      wB=d.w[1];wT=d.w[0];pu=d.u?{x:1-d.u[0],y:1-d.u[1],k:d.u[2]}:null;
+      if(d.e&&d.e[0]!=lastEv){lastEv=d.e[0];snd(d.e[1]);if(d.e[1]=='sc'){flash=1;burst(.5,.5,'#fff',14)}if(d.e[1]=='pu')burst(b.x,b.y,'#0ff',14)}}});
+  ch.on('close',()=>{
+    if(mode!=2)return;
+    if(role==1)rejoin(4);
+    else{$('link').hidden=false;$('qr').hidden=true;ui('Player 2 disconnected — waiting for them to come back…')}});
 }
-function perr(e){ui(e.type=='peer-unavailable'?'Game not found — check the code on the host phone':'Connection error ('+e.type+') — tap CANCEL and retry')}
+function rejoin(n){
+  if(n<=0){ui('Connection lost — reload to start over');return}
+  $('link').hidden=false;ui('Reconnecting…');
+  const c=peer.connect('campong-'+hostCode,{reliable:true});let ok=0;
+  c.on('open',()=>{ok=1;wire(c)});
+  setTimeout(()=>{if(!ok)rejoin(n-1)},4000)}
+function perr(e){if(e.type=='peer-unavailable')ui(role==1?'Game not found — check the code on the host phone':'Error — reload to retry');
+  else ui('Connection error ('+e.type+') — tap CANCEL and retry')}
 function startHost(){role=0;$('menu').hidden=true;$('link').hidden=false;ui('Creating game…');
   let code='';for(let i=0;i<4;i++)code+='ABCDEFGHJKMNPQRSTUVWXYZ23456789'[Math.random()*31|0];
-  peer=new Peer('campong-'+code);
+  peer=new Peer('campong-'+code,{config:ICE});
   peer.on('open',()=>{showQR(location.origin+location.pathname+'#'+code);
     ui('Player 2: scan this with your phone camera. Or open the site and JOIN WITH CODE: '+code)});
   peer.on('connection',c=>{$('qr').hidden=true;ui('Connecting…');wire(c)});
-  peer.on('error',perr);
-}
+  peer.on('disconnected',()=>peer.reconnect());
+  peer.on('error',perr)}
 function startJoin(code){role=1;$('menu').hidden=true;$('link').hidden=false;
-  code=code.trim().toUpperCase();ui('Joining game '+code+'…');
-  peer=new Peer();
-  peer.on('open',()=>wire(peer.connect('campong-'+code,{reliable:true})));
-  peer.on('error',perr);
-}
+  hostCode=code.trim().toUpperCase();ui('Joining game '+hostCode+'…');
+  peer=new Peer({config:ICE});
+  peer.on('open',()=>wire(peer.connect('campong-'+hostCode,{reliable:true})));
+  peer.on('disconnected',()=>peer.reconnect());
+  peer.on('error',perr)}
 function askJoin(){const c=prompt('Enter the 4-letter code shown on the host phone:');if(c)startJoin(c)}
 if(location.hash.length>1){const c=location.hash.slice(1);history.replaceState(null,'',location.pathname);startJoin(c)}
 </script></body></html>
