@@ -28,8 +28,8 @@ function tap(x,y){
   if(over){if(mode==1||role==0)reset();return}
   if(!run){if(mode==1||role==0)serve();else ch&&ch.send('{"t":"t"}')}
 }
-addEventListener('touchstart',e=>{e.preventDefault();tap();move(e)},{passive:false});
-addEventListener('touchmove',e=>{e.preventDefault();move(e)},{passive:false});
+addEventListener('touchstart',e=>{if(!mode||e.target.closest('button'))return;e.preventDefault();tap();move(e)},{passive:false});
+addEventListener('touchmove',e=>{if(!mode)return;e.preventDefault();move(e)},{passive:false});
 function move(e){if(!mode)return;
   for(const t of e.touches){const x=t.clientX/innerWidth,y=t.clientY/innerHeight;
     if(mode==1&&y<.5)padT=x;else padB=x;}
