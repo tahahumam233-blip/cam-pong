@@ -1,0 +1,101 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Cam Pong</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<style>
+*{margin:0;box-sizing:border-box}body{background:#000;color:#0f0;font-family:monospace;overflow:hidden;position:fixed;inset:0;touch-action:none;-webkit-user-select:none;user-select:none}
+button{background:#0f0;color:#000;border:0;padding:14px 22px;font:bold 18px monospace;border-radius:8px;margin:8px}
+#menu,#link{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:16px;background:#000;z-index:2}
+#qr{background:#fff;padding:8px;max-width:80vw}video{max-width:80vw;max-height:50vh;border:2px solid #0f0}
+#msg{margin:12px;font-size:16px}[hidden]{display:none!important}
+</style></head><body>
+<div id="menu"><h1>CAM PONG</h1>
+<button onclick="startLocal()">1 PHONE (2 players)</button>
+<button onclick="startHost()">2 PHONES — HOST</button>
+<button onclick="startJoin()">2 PHONES — JOIN</button>
+<p style="color:#888;max-width:300px">2-phone mode: pair by scanning QR codes with the camera (same Wi-Fi)</p></div>
+<div id="link" hidden><div id="msg"></div><canvas id="qr" hidden></canvas><video id="cam" hidden playsinline muted></video><button id="act" hidden></button></div>
+<canvas id="game"></canvas>
+<script>
+const $=i=>document.getElementById(i),cv=$('game'),cx=cv.getContext('2d');
+let W,H;const fit=()=>{W=cv.width=innerWidth;H=cv.height=innerHeight};addEventListener('resize',fit);fit();
+const PW=.24,PH=.015,BR=.014;
+let mode=0,role=0,ch=null,run=0,over=0;          // mode 1=local 2=net; role 0=host 1=guest
+let b={x:.5,y:.5,vx:0,vy:0},padB=.5,padT=.5,sc=[0,0]; // sc[0]=bottom(me/host)
+function serve(){b={x:.5,y:.5,vx:(Math.random()-.5)*.008,vy:(Math.random()<.5?1:-1)*.007};run=1}
+function reset(){sc=[0,0];over=0;run=0;b={x:.5,y:.5,vx:0,vy:0}}
+function tap(x,y){
+  if(over){if(mode==1||role==0)reset();return}
+  if(!run){if(mode==1||role==0)serve();else ch&&ch.send('{"t":"t"}')}
+}
+addEventListener('touchstart',e=>{e.preventDefault();tap();move(e)},{passive:false});
+addEventListener('touchmove',e=>{e.preventDefault();move(e)},{passive:false});
+function move(e){if(!mode)return;
+  for(const t of e.touches){const x=t.clientX/innerWidth,y=t.clientY/innerHeight;
+    if(mode==1&&y<.5)padT=x;else padB=x;}
+  if(mode==2&&role==1&&ch)ch.send(JSON.stringify({t:'p',x:+(1-padB).toFixed(4)}));
+}
+function physics(){ // host/local only
+  b.x+=b.vx;b.y+=b.vy;
+  if(b.x<BR){b.x=BR;b.vx*=-1}if(b.x>1-BR){b.x=1-BR;b.vx*=-1}
+  const hit=(px,py,up)=>{if(Math.abs(b.x-px)<PW/2+BR){b.y=py+(up?-1:1)*(PH+BR);b.vy=(up?-1:1)*Math.min(Math.abs(b.vy)*1.06,.02);b.vx+=(b.x-px)*.03}};
+  if(b.vy>0&&b.y>.95-BR&&b.y<.97)hit(padB,.95,1);
+  if(b.vy<0&&b.y<.05+BR&&b.y>.03)hit(padT,.05,0);
+  if(b.y>1.05){sc[1]++;point()}if(b.y<-.05){sc[0]++;point()}
+}
+function point(){run=0;b={x:.5,y:.5,vx:0,vy:0};if(sc[0]>6||sc[1]>6)over=1}
+function draw(){cx.fillStyle='#000';cx.fillRect(0,0,W,H);cx.fillStyle='#0f0';
+  cx.setLineDash([8,8]);cx.strokeStyle='#0f0';cx.beginPath();cx.moveTo(0,H/2);cx.lineTo(W,H/2);cx.stroke();
+  const r=BR*W;cx.beginPath();cx.arc(b.x*W,b.y*H,r,0,7);cx.fill();
+  cx.fillRect((padB-PW/2)*W,.95*H,PW*W,PH*H);cx.fillRect((padT-PW/2)*W,(.05-PH)*H,PW*W,PH*H);
+  cx.font='bold 28px monospace';cx.textAlign='center';
+  cx.fillText(sc[1],W/2,H/2-20);cx.fillText(sc[0],W/2,H/2+40);
+  if(over){cx.fillText((sc[0]>sc[1]?(mode==1?'BOTTOM WINS':'YOU WIN!'):(mode==1?'TOP WINS':'YOU LOSE')),W/2,H/2-70);cx.fillText('tap to restart',W/2,H/2+90)}
+  else if(!run)cx.fillText(mode==2&&role==1?'tap when ready':'tap to serve',W/2,H/2+90);
+}
+function loop(){
+  if(mode==1||role==0){if(run)physics();
+    if(ch&&ch.readyState=='open')ch.send(JSON.stringify({t:'s',b:[+b.x.toFixed(4),+b.y.toFixed(4)],p:+padB.toFixed(4),s:sc,r:run,o:over}));}
+  if(mode)draw();requestAnimationFrame(loop)}
+loop();
+function startGame(){$('menu').hidden=$('link').hidden=true;reset()}
+function startLocal(){mode=1;startGame()}
+// ---- WebRTC pairing via QR + camera ----
+function ui(m,btn,fn){$('msg').textContent=m;const a=$('act');a.hidden=!btn;if(btn){a.textContent=btn;a.onclick=fn}}
+function newPC(){const p=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  p.onconnectionstatechange=()=>{if(p.connectionState=='failed')ui('Connection failed — reload & retry')};return p}
+const gather=p=>new Promise(r=>{p.onicegatheringstatechange=()=>p.iceGatheringState=='complete'&&r();setTimeout(r,3500)});
+const slim=s=>s.split('\r\n').filter(l=>!(l.startsWith('a=candidate')&&!l.includes(' udp '))).join('\r\n');
+function showQR(txt){const q=$('qr'),c=qrcode(0,'L');c.addData(txt);c.make();
+  const n=c.getModuleCount(),s=Math.max(2,Math.floor(Math.min(innerWidth*.8,340)/n));
+  q.hidden=false;q.width=q.height=n*s;const g=q.getContext('2d');
+  g.fillStyle='#fff';g.fillRect(0,0,q.width,q.height);g.fillStyle='#000';
+  for(let r=0;r<n;r++)for(let o=0;o<n;o++)if(c.isDark(r,o))g.fillRect(o*s,r*s,s,s);}
+async function scan(){
+  if(!('BarcodeDetector'in window))return prompt('Camera QR scan unsupported. Paste code from other phone:');
+  const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+  const v=$('cam');v.hidden=false;v.srcObject=st;await v.play();
+  const d=new BarcodeDetector({formats:['qr_code']});
+  return new Promise(res=>{const iv=setInterval(async()=>{
+    const c=await d.detect(v).catch(()=>null);
+    if(c&&c[0]){clearInterval(iv);st.getTracks().forEach(t=>t.stop());v.hidden=true;res(c[0].rawValue)}},250)});
+}
+function wire(c){ch=c;ch.onopen=()=>{mode=2;startGame()};
+  ch.onmessage=e=>{const d=JSON.parse(e.data);
+    if(d.t=='p')padT=d.x;
+    if(d.t=='t'&&!run&&!over)serve();
+    if(d.t=='s'){b={x:1-d.b[0],y:1-d.b[1],vx:0,vy:0};padT=1-d.p;sc=[d.s[1],d.s[0]];run=d.r;over=d.o}};}
+async function startHost(){role=0;$('menu').hidden=true;$('link').hidden=false;ui('Creating code…');
+  const p=newPC();wire(p.createDataChannel('g'));
+  await p.setLocalDescription(await p.createOffer());await gather(p);
+  showQR(slim(p.localDescription.sdp));
+  ui('Player 2: tap JOIN and scan this. Then press:','SCAN REPLY',async()=>{$('qr').hidden=true;$('act').hidden=true;ui('Scanning player 2’s code…');
+    await p.setRemoteDescription({type:'answer',sdp:await scan()});ui('Connecting…')});
+}
+async function startJoin(){role=1;$('menu').hidden=true;$('link').hidden=false;ui('Scan the HOST’s code');
+  const p=newPC();p.ondatachannel=e=>wire(e.channel);
+  await p.setRemoteDescription({type:'offer',sdp:await scan()});
+  await p.setLocalDescription(await p.createAnswer());await gather(p);
+  showQR(slim(p.localDescription.sdp));ui('Show this to the HOST (Scan reply). Connecting…');
+}
+</script></body></html>
