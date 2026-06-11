@@ -12,12 +12,16 @@
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
+/* safe-area insets exposed as CSS vars so JS can read them in layout() */
+:root{--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);--sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px)}
 *{margin:0;box-sizing:border-box}
 body{background:#050510;color:#dff;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;position:fixed;inset:0;touch-action:none;-webkit-user-select:none;user-select:none}
 h1{letter-spacing:6px;text-shadow:0 0 20px #0ff,0 0 40px #08f;font-weight:200;margin-bottom:10px}
 button{background:linear-gradient(135deg,#0ff,#08f);color:#012;border:0;padding:14px 26px;font:700 16px 'Segoe UI',sans-serif;border-radius:14px;margin:7px;box-shadow:0 0 14px #0ff4;letter-spacing:1px}
 button:active{transform:scale(.96)}
-#menu,#link{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:16px;background:radial-gradient(circle at 50% 25%,#101035,#050510 70%);z-index:2}
+#menu,#link{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;
+  padding:calc(16px + var(--sat)) calc(16px + var(--sar)) calc(16px + var(--sab)) calc(16px + var(--sal));
+  background:radial-gradient(circle at 50% 25%,#101035,#050510 70%);z-index:2}
 #qr{background:#fff;padding:8px;border-radius:10px;max-width:80vw}
 #msg{margin:12px;font-size:16px;max-width:320px;color:#9cf}
 #set{margin-top:8px}
@@ -39,8 +43,6 @@ button:active{transform:scale(.96)}
 <canvas id="game"></canvas>
 <script>
 const $=i=>document.getElementById(i),cv=$('game'),cx=cv.getContext('2d');
-let W,H;const fit=()=>{const d=devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*d;cv.height=H*d;cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(d,0,0,d,0,0)};
-addEventListener('resize',fit);fit();
 // ---- settings (persisted) ----
 const OPT={spd:['SLOW','NORMAL','FAST'],pad:['SMALL','MEDIUM','LARGE'],win:[5,7,11],pow:['OFF','ON'],snd:['OFF','ON']};
 const LBL={spd:'BALL SPEED',pad:'PADDLE',win:'WIN SCORE',pow:'POWER-UPS',snd:'SOUND'};
@@ -55,7 +57,11 @@ let AC;function snd(k){if(!S.snd)return;try{AC=AC||new(window.AudioContext||wind
 const f={h:660,w:300,sc:150,pu:980}[k]||500,d=k=='sc'?.3:.07,o=AC.createOscillator(),g=AC.createGain();
 o.type=k=='sc'?'sawtooth':'square';o.frequency.value=f;g.gain.setValueAtTime(.12,AC.currentTime);
 g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+d);o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+d)}catch(e){}}
-// ---- game state ----
+// ---- game state -----------------------------------------------------------
+// IMPORTANT: every gameplay entity (ball, paddles, power-ups, particles) lives
+// in COURT-LOCAL normalized coordinates: x,y in 0..1 across the court rect.
+// Nothing in the physics knows about screen pixels; only draw() and the touch
+// mapping translate between the two via CR (courtRect).
 const PH=.015,BR=.014;
 let mode=0,role=0,ch=null,run=0,over=0;            // mode 1=local 2=net; role 0=host 1=guest
 let b={x:.5,y:.5,vx:0,vy:0},tb={x:.5,y:.5};        // tb = guest interpolation target
@@ -63,6 +69,44 @@ let padB=.5,padT=.5,gT=.5,prevB=.5,prevT=.5,vB=0,vT=0,wB=.24,wT=.24;
 let sc=[0,0],lastHit=0,evN=0,evK='',lastEv=0,flash=0;
 let pu=null,puNext=0,fx=[],T=[],P=[];
 const PUC=['#0f8','#f55','#ff3','#4af'],PUS=['+','−','⚡','❄'];
+// ---- layout: full-screen app, inset court, touch zones ---------------------
+// The screen is divided into touch-control strips and a centered court:
+//   portrait : [top zone] gap [ COURT ] gap [bottom zone]
+//   landscape: [left zone] gap [ COURT ] gap [right zone]
+// CR (courtRect) = the game world rectangle in CSS pixels.
+// zones[] = touch-control rectangles; dragging inside a zone moves a paddle,
+// so fingers never cover the playfield.
+let W,H,CR={x:0,y:0,w:0,h:0},zones=[],land=0;
+const gv=n=>parseFloat(getComputedStyle(document.documentElement).getPropertyValue(n))||0; // read safe-area inset
+const sx=x=>CR.x+x*CR.w, sy=y=>CR.y+y*CR.h;        // court-local 0..1 -> screen px
+function layout(){
+  const d=devicePixelRatio||1;W=innerWidth;H=innerHeight;
+  cv.width=W*d;cv.height=H*d;cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(d,0,0,d,0,0);
+  const st=gv('--sat'),sb=gv('--sab'),sl=gv('--sal'),sr=gv('--sar');
+  land=W>H;zones=[];
+  const local=mode!=2; // local play (or menu backdrop) gets a zone per player; online gets only yours
+  if(!land){
+    // portrait: horizontal strips. Zone height: thumb-sized but proportional.
+    const zh=Math.min(Math.max(84,H*.13),140),gap=10,mx=14+Math.max(sl,sr);
+    const zb={x:mx,y:H-sb-8-zh,w:W-2*mx,h:zh,tgt:'B',vert:0};
+    zones.push(zb);
+    let top=st+12;
+    if(local){const zt={x:mx,y:st+8,w:W-2*mx,h:zh,tgt:'T',vert:0};zones.push(zt);top=zt.y+zh+gap}
+    CR={x:mx,y:top,w:W-2*mx,h:zb.y-gap-top};
+  }else{
+    // landscape: vertical strips on the sides; dragging up/down slides the paddle across the court.
+    const zw=Math.min(Math.max(84,W*.12),140),gap=10,my=12+Math.max(st,sb);
+    const zr={x:W-sr-8-zw,y:my,w:zw,h:H-2*my,tgt:'B',vert:1};
+    zones.push(zr);
+    let left=sl+14;
+    if(local){const zl={x:sl+8,y:my,w:zw,h:H-2*my,tgt:'T',vert:1};zones.push(zl);left=zl.x+zw+gap}
+    CR={x:left,y:my,w:zr.x-gap-left,h:H-2*my};
+  }
+}
+addEventListener('resize',layout);
+addEventListener('orientationchange',()=>setTimeout(layout,60));
+layout();
+// ---- helpers ----
 function ev(k){evN++;evK=k;snd(k)}
 function burst(x,y,col,n){for(let i=0;i<n;i++){const a=Math.random()*7,s=.002+Math.random()*.006;P.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,l:1,c:col})}}
 function serve(){const sp=.0075*spdMul();b={x:.5,y:.5,vx:(Math.random()-.5)*sp,vy:(Math.random()<.5?1:-1)*sp};run=1}
@@ -71,15 +115,29 @@ function tap(){
   if(over){if(mode==1||role==0)reset();return}
   if(!run){if(mode==1||role==0)serve();else if(ch&&ch.open)ch.send({t:'t'})}
 }
+// ---- touch-zone -> paddle mapping ------------------------------------------
+// A finger anywhere inside a zone maps its position ALONG the zone (x in
+// portrait strips, y in landscape strips) to the paddle's court-local x.
+// Absolute mapping: left edge of zone = left edge of court. The paddle is
+// clamped so it never leaves the court.
+function clampPad(v,t){const w=t=='B'?wB:wT;return Math.max(w/2,Math.min(1-w/2,v))}
+function applyPoint(px,py){
+  for(const z of zones){
+    if(px<z.x||px>z.x+z.w||py<z.y||py>z.y+z.h)continue;
+    const v=z.vert?(py-z.y)/z.h:(px-z.x)/z.w;
+    if(z.tgt=='B')padB=clampPad(v,'B');
+    else if(mode==1)padT=clampPad(v,'T');
+    return true}
+  return false}
+function move(ts){
+  for(const t of ts)applyPoint(t.clientX,t.clientY);
+  if(mode==2&&role==1&&ch&&ch.open)ch.send({t:'p',x:+(1-padB).toFixed(4)});
+}
 addEventListener('touchstart',e=>{if(!mode||e.target.closest('button'))return;e.preventDefault();tap();move(e.touches)},{passive:false});
 addEventListener('touchmove',e=>{if(!mode)return;e.preventDefault();move(e.touches)},{passive:false});
 addEventListener('mousedown',e=>{if(!mode||e.target.closest('button'))return;tap();move([e])});
 addEventListener('mousemove',e=>{if(mode&&e.buttons)move([e])});
-function move(ts){
-  for(const t of ts){const x=t.clientX/innerWidth,y=t.clientY/innerHeight;
-    if(mode==1&&y<.5)padT=x;else padB=x;}
-  if(mode==2&&role==1&&ch&&ch.open)ch.send({t:'p',x:+(1-padB).toFixed(4)});
-}
+// ---- power-ups & physics (court-local units, unchanged by the layout) ----
 function widths(n){let B=PWb(),T2=PWb();fx=fx.filter(f=>f.end>n);
   for(const f of fx){if(f.k==0)f.who?T2*=1.6:B*=1.6;if(f.k==1)f.who?B*=.55:T2*=.55}
   wB=Math.min(B,.5);wT=Math.min(T2,.5)}
@@ -108,31 +166,67 @@ function physics(n){
   if(b.y>1.05){sc[1]++;point()}else if(b.y<-.05){sc[0]++;point()}
 }
 function point(){run=0;b={x:.5,y:.5,vx:0,vy:0};ev('sc');flash=1;burst(.5,.5,'#fff',16);if(sc[0]>=S.win||sc[1]>=S.win)over=1}
+// ---- rendering --------------------------------------------------------------
+// draw() renders: full-screen backdrop -> court panel -> (clipped) game world
+// mapped through sx()/sy() -> messages -> touch zones. Only this function and
+// the input code touch screen pixels.
 const rr=(x,y,w,h,r)=>{cx.beginPath();cx.roundRect?cx.roundRect(x,y,w,h,r):cx.rect(x,y,w,h);cx.fill()};
+function courtPath(){cx.beginPath();cx.roundRect?cx.roundRect(CR.x,CR.y,CR.w,CR.h,14):cx.rect(CR.x,CR.y,CR.w,CR.h)}
 function draw(){
+  // app backdrop (full screen)
   const g=cx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#0a0a22');g.addColorStop(.5,'#060614');g.addColorStop(1,'#0a0a22');
   cx.fillStyle=g;cx.fillRect(0,0,W,H);
-  cx.strokeStyle='rgba(120,200,255,.15)';cx.setLineDash([10,12]);cx.beginPath();cx.moveTo(0,H/2);cx.lineTo(W,H/2);cx.stroke();cx.setLineDash([]);
-  cx.textAlign='center';cx.fillStyle='rgba(150,200,255,.09)';cx.font='900 110px "Segoe UI"';
-  cx.fillText(sc[1],W/2,H*.3);cx.fillText(sc[0],W/2,H*.78);
-  if(pu){const x=pu.x*W,y=pu.y*H;cx.shadowColor=PUC[pu.k];cx.shadowBlur=18;
-    cx.fillStyle=PUC[pu.k];cx.beginPath();cx.arc(x,y,16,0,7);cx.fill();cx.shadowBlur=0;
-    cx.fillStyle='#001';cx.font='bold 19px "Segoe UI"';cx.fillText(PUS[pu.k],x,y+7)}
+  // court panel + neon frame
+  cx.fillStyle='#05050f';courtPath();cx.fill();
+  cx.shadowColor='#0ff';cx.shadowBlur=10;cx.strokeStyle='rgba(0,255,255,.28)';cx.lineWidth=1.5;courtPath();cx.stroke();cx.shadowBlur=0;
+  cx.strokeStyle='rgba(120,200,255,.15)';cx.setLineDash([10,12]);cx.beginPath();cx.moveTo(CR.x+8,sy(.5));cx.lineTo(CR.x+CR.w-8,sy(.5));cx.stroke();cx.setLineDash([]);
+  // game world, clipped so nothing ever renders outside the court
+  cx.save();courtPath();cx.clip();
+  if(pu){const x=sx(pu.x),y=sy(pu.y),r=Math.max(12,CR.w*.04);cx.shadowColor=PUC[pu.k];cx.shadowBlur=18;
+    cx.fillStyle=PUC[pu.k];cx.beginPath();cx.arc(x,y,r,0,7);cx.fill();cx.shadowBlur=0;
+    cx.fillStyle='#001';cx.font='bold '+Math.round(r*1.2)+'px "Segoe UI"';cx.textAlign='center';cx.fillText(PUS[pu.k],x,y+r*.42)}
   for(let i=0;i<T.length;i++){const a=i/T.length;cx.fillStyle='rgba(140,240,255,'+(a*.35)+')';
-    cx.beginPath();cx.arc(T[i].x*W,T[i].y*H,BR*W*a,0,7);cx.fill()}
-  if(run||mode){cx.shadowColor='#aff';cx.shadowBlur=16;cx.fillStyle='#fff';
-    cx.beginPath();cx.arc(b.x*W,b.y*H,BR*W,0,7);cx.fill()}
-  cx.shadowColor='#f4a';cx.shadowBlur=14;cx.fillStyle='#f4a';rr((padT-wT/2)*W,(.05-PH)*H,wT*W,PH*H+4,6);
-  cx.shadowColor='#0ff';cx.shadowBlur=14;cx.fillStyle='#0ff';rr((padB-wB/2)*W,.95*H-4,wB*W,PH*H+4,6);
+    cx.beginPath();cx.arc(sx(T[i].x),sy(T[i].y),BR*CR.w*a,0,7);cx.fill()}
+  if(mode){cx.shadowColor='#aff';cx.shadowBlur=16;cx.fillStyle='#fff';
+    cx.beginPath();cx.arc(sx(b.x),sy(b.y),BR*CR.w,0,7);cx.fill()}
+  cx.shadowColor='#f4a';cx.shadowBlur=14;cx.fillStyle='#f4a';rr(sx(padT-wT/2),sy(.05-PH),wT*CR.w,PH*CR.h+3,5);
+  cx.shadowColor='#0ff';cx.shadowBlur=14;cx.fillStyle='#0ff';rr(sx(padB-wB/2),sy(.95)-3,wB*CR.w,PH*CR.h+3,5);
   cx.shadowBlur=0;
   for(let i=P.length-1;i>=0;i--){const p=P[i];p.x+=p.vx;p.y+=p.vy;p.l-=.03;
     if(p.l<=0){P.splice(i,1);continue}
-    cx.globalAlpha=p.l;cx.fillStyle=p.c;cx.fillRect(p.x*W-2,p.y*H-2,4,4)}
-  cx.globalAlpha=1;
-  cx.fillStyle='#cef';cx.font='600 20px "Segoe UI"';
-  if(over)cx.fillText((sc[0]>sc[1]?(mode==1?'BOTTOM WINS':'YOU WIN! 🏆'):(mode==1?'TOP WINS':'YOU LOSE'))+'  —  tap to restart',W/2,H/2+70);
-  else if(!run&&mode)cx.fillText(mode==2&&role==1?'tap when ready':'tap to serve',W/2,H/2+70);
-  if(flash>0){cx.strokeStyle='rgba(0,255,255,'+flash*.7+')';cx.lineWidth=8;cx.strokeRect(2,2,W-4,H-4);cx.lineWidth=1;flash-=.04}
+    cx.globalAlpha=p.l;cx.fillStyle=p.c;cx.fillRect(sx(p.x)-2,sy(p.y)-2,4,4)}
+  cx.globalAlpha=1;cx.restore();
+  // status messages (center court — only shown between rallies)
+  cx.fillStyle='#cef';cx.font='600 '+Math.max(15,Math.min(20,CR.w*.05))+'px "Segoe UI"';cx.textAlign='center';
+  if(over)cx.fillText((sc[0]>sc[1]?(mode==1?'BOTTOM WINS':'YOU WIN! 🏆'):(mode==1?'TOP WINS':'YOU LOSE'))+'  —  tap to restart',sx(.5),sy(.5)+50);
+  else if(!run&&mode)cx.fillText(mode==2&&role==1?'tap when ready':'tap to serve',sx(.5),sy(.5)+50);
+  if(flash>0){cx.strokeStyle='rgba(0,255,255,'+flash*.7+')';cx.lineWidth=7;courtPath();cx.stroke();cx.lineWidth=1;flash-=.04}
+  drawZones();
+}
+// touch zones: subtle tinted strips with the player's score and a drag hint.
+// In local portrait play the top zone's contents are rotated 180° so the
+// player facing the other way reads them upright.
+function drawZones(){
+  for(const z of zones){
+    const C=z.tgt=='B'?'0,255,255':'255,68,170';
+    cx.fillStyle='rgba('+C+',.05)';rr(z.x,z.y,z.w,z.h,16);
+    cx.strokeStyle='rgba('+C+',.20)';cx.lineWidth=1;
+    cx.beginPath();cx.roundRect?cx.roundRect(z.x+.5,z.y+.5,z.w-1,z.h-1,16):cx.rect(z.x,z.y,z.w,z.h);cx.stroke();
+    cx.save();cx.translate(z.x+z.w/2,z.y+z.h/2);
+    if(!land&&z.tgt=='T'&&mode==1)cx.rotate(Math.PI);
+    const s=z.tgt=='B'?sc[0]:sc[1];
+    cx.textAlign='center';
+    if(z.vert){
+      cx.fillStyle='rgba('+C+',.9)';cx.font='800 26px "Segoe UI"';cx.fillText(s,0,-z.h/2+36);
+      if(mode==2){cx.fillStyle='rgba(255,68,170,.9)';cx.fillText(sc[1],0,z.h/2-18)} // opponent score below yours
+      cx.fillStyle='rgba('+C+',.3)';cx.font='600 14px "Segoe UI"';cx.fillText('⌃',0,-10);cx.fillText('⌄',0,18);
+    }else{
+      cx.fillStyle='rgba('+C+',.9)';cx.font='800 26px "Segoe UI"';cx.fillText(s,-z.w/2+32,9);
+      if(mode==2){cx.fillStyle='rgba(255,68,170,.9)';cx.fillText(sc[1],z.w/2-32,9)}    // opponent score on the right
+      cx.fillStyle='rgba('+C+',.3)';cx.font='600 12px "Segoe UI"';cx.fillText('‹  drag to move  ›',0,5);
+    }
+    cx.restore();
+  }
 }
 function loop(){
   const n=performance.now();
@@ -148,7 +242,7 @@ function loop(){
   if(mode){if(run){T.push({x:b.x,y:b.y});if(T.length>14)T.shift()}else T=[];draw()}
   requestAnimationFrame(loop)}
 loop();
-function startGame(){$('menu').hidden=$('link').hidden=true;reset()}
+function startGame(){$('menu').hidden=$('link').hidden=true;reset();layout()} // re-layout: zone set depends on mode
 function startLocal(){mode=1;startGame()}
 // ---- pairing: QR is a URL; guest's native camera opens it and auto-joins (PeerJS signaling, TURN relay fallback) ----
 const ICE={iceServers:[
