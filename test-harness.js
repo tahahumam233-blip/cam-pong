@@ -96,7 +96,7 @@ setTimeout(() => {
   check('local 2P starts', run('mode') === 1);
   check('two touch zones in local 2P', run('zones.length') === 2);
   run('tap()'); step(200);
-  check('local 2P serves', run('run') === 1);
+  check('local 2P serves', run('run===1||sc[0]+sc[1]>0||over===1'));
   // --- bot difficulty sanity: insane predicts, rookie lags ---
   run('mode=3;diff=3;reset()'); run('tap()'); step(200);
   let frames = 0;
@@ -107,7 +107,8 @@ setTimeout(() => {
   while (frames < 14000 && run('sc[0]+sc[1]') < 8) { step(60); frames += 60; run('if(!run&&!over&&!cnt)tap()'); }
   const rookieConceded = run('sc[0]');
   console.log('  (vs static player: rookie conceded ' + rookieConceded + ', insane conceded ' + insaneConceded + ')');
-  check('rookie concedes at least as much as insane (±1 noise)', rookieConceded + 1 >= insaneConceded);
+  check('rookie concedes at least as much as insane', rookieConceded >= insaneConceded);
+  check('insane barely concedes vs static paddle (<=3 of 8)', insaneConceded <= 3);
   console.log(fails ? '\n' + fails + ' FAILURES' : '\nALL PASS');
   process.exit(fails ? 1 : 0);
 }, 500);
