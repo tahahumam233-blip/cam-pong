@@ -469,7 +469,7 @@ const BOTS=[
   react:120,err:.032,spd:.032,pred:.9,aim:.8,smash:.5,mist:.07,adapt:.5,
   in:'PRO: let’s keep this professional.',w:'PRO: textbook. Study the replay.',l:'PRO: …impressive. You’d go far on tour.'},
  {nm:'CHAMPION',ttl:'INSANE',ds:'Reads your paddle, aims for corners, punishes everything weak. Rarely—rarely—human.',
-  react:55,err:.011,spd:.048,pred:1,aim:1,smash:.85,mist:.025,adapt:.9,
+  react:45,err:.008,spd:.048,pred:1,aim:1,smash:.92,mist:.015,adapt:.9,
   in:'CHAMPION: many have tried. Take your serve.',w:'CHAMPION: the throne stays mine.',l:'CHAMPION: …a worthy successor. The crown is yours.'}];
 let BOT={t:.5,until:0,appr:0,err:0,plan:0,smashing:0,hist:[],wasIn:0};
 function botReset(){BOT={t:.5,until:0,appr:0,err:0,plan:0,smashing:0,hist:BOT.hist||[],wasIn:0}}
@@ -505,10 +505,10 @@ function botStep(n,dt){if(mode!=3)return;const D=BOTS[diff];
       const ix=Math.max(wT/2,Math.min(1-wT/2,b.x+(predictX()-b.x)*D.pred+BOT.err));
       const tti=(b.y-(.05+PH+BR))/Math.max(1e-4,-b.vy);        // frames until impact
       if(BOT.smashing){const dir=BOT.plan<0?1:-1,
-        swing=.8*wT/(D.spd*2.2)+1;                             // frames the swing needs to reach contact
+        swing=1.25*wT/(D.spd*2.2)+1;                           // frames the full swing needs
         BOT.t=tti>swing?ix+dir*wT*.8                           // wind-up: hold off-line
-                       :ix-dir*wT*1.6}                         // sweep: crosses contact as the ball lands
-      else BOT.t=ix+BOT.plan;
+                       :ix-dir*wT*.45}                         // sweep ends safely inside contact range:
+      else BOT.t=ix+BOT.plan;                                  // an early swing blocks instead of whiffing
     }
   }
   const sp=D.spd*(BOT.smashing&&b.vy<0&&b.y<.3?2.2:1)*dt,d=BOT.t-padT;
